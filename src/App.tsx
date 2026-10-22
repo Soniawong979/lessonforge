@@ -2,6 +2,7 @@ import { useRef, useState, type ChangeEvent } from 'react'
 import * as pdfjsLib from 'pdfjs-dist'
 import type { PDFDocumentLoadingTask } from 'pdfjs-dist'
 import pdfWorker from 'pdfjs-dist/build/pdf.worker.min.mjs?url'
+import type { OutlineSlide } from './types/outline'
 import './App.css'
 
 pdfjsLib.GlobalWorkerOptions.workerSrc = pdfWorker
@@ -11,13 +12,6 @@ const MAX_FILE_SIZE = 50 * 1024 * 1024
 type ExtractedPage = {
   pageNumber: number
   text: string
-}
-
-type OutlineSlide = {
-  id: string
-  title: string
-  bullets: string[]
-  sourcePageNumbers: number[]
 }
 
 type ExtractionProgress = {
@@ -106,8 +100,12 @@ function App() {
   const [progress, setProgress] = useState<ExtractionProgress | null>(null)
   const [errorMessage, setErrorMessage] = useState('')
   const [hasNoReadableText, setHasNoReadableText] = useState(false)
+  const [isExporting, setIsExporting] = useState(false)
+  const [exportErrorMessage, setExportErrorMessage] = useState('')
+  const [exportStatusMessage, setExportStatusMessage] = useState('')
   const requestIdRef = useRef(0)
   const loadingTaskRef = useRef<PDFDocumentLoadingTask | null>(null)
+  const exportInProgressRef = useRef(false)
 
   async function handleFileChange(event: ChangeEvent<HTMLInputElement>) {
     const file = event.currentTarget.files?.[0]
@@ -127,6 +125,8 @@ function App() {
     setProgress(null)
     setErrorMessage('')
     setHasNoReadableText(false)
+    setExportErrorMessage('')
+    setExportStatusMessage('')
     setIsLoading(false)
 
     const hasPdfExtension = /\.pdf$/i.test(file.name)
@@ -268,6 +268,42 @@ function App() {
     }))
   }
 
+  async function handleExportPptx() {
+    if (exportInProgressRef.current) {
+      return
+    }
+
+    if (slides.length === 0) {
+      setExportErrorMessage('当前没有可导出的幻灯片，请先添加幻灯片。')
+      setExportStatusMessage('')
+      return
+    }
+
+    exportInProgressRef.current = true
+    setIsExporting(true)
+    setExportErrorMessage('')
+    setExportStatusMessage('')
+
+    const baseName = selectedFileName
+      .replace(/\.pdf$/i, '')
+      .replace(/[<>:"/\\|?*]/g, '-')
+      .trim()
+      .slice(0, 80)
+    const fileName = `${baseName || 'lessonforge'}-slides.pptx`
+
+    try {
+      const { exportOutlineToPptx } = await import('./utils/exportPptx')
+      await exportOutlineToPptx(slides, fileName)
+      setExportStatusMessage(`已生成并下载 ${fileName}`)
+    } catch (error: unknown) {
+      const details = error instanceof Error ? ` ${error.message}` : ''
+      setExportErrorMessage(`PPTX 导出失败，请稍后重试。${details}`)
+    } finally {
+      exportInProgressRef.current = false
+      setIsExporting(false)
+    }
+  }
+
   return (
     <main className="app-shell">
       <header className="app-header">
@@ -317,7 +353,7 @@ function App() {
         </p>
       )}
 
-      {slides.length > 0 && (
+      {pages.length > 0 && (
         <section className="outline" aria-labelledby="outline-heading">
           <div className="results-header">
             <div>
@@ -326,12 +362,41 @@ function App() {
                 根据每页提取文字的段落和句子切分生成，不代表已理解教学语义；请继续检查和编辑。
               </p>
             </div>
-            <button className="secondary-button" type="button" onClick={addSlide}>
-              添加幻灯片
-            </button>
+            <div className="outline-actions">
+              <button
+                className="secondary-button"
+                type="button"
+                onClick={addSlide}
+              >
+                添加幻灯片
+              </button>
+              <button
+                className="primary-button"
+                type="button"
+                onClick={handleExportPptx}
+                disabled={isExporting || slides.length === 0}
+              >
+                {isExporting ? '正在导出…' : '导出 PPTX'}
+              </button>
+            </div>
           </div>
-          <div className="slide-list">
-            {slides.map((slide, slideIndex) => (
+          {exportStatusMessage && (
+            <p className="export-status" role="status">
+              {exportStatusMessage}
+            </p>
+          )}
+          {exportErrorMessage && (
+            <p className="error-message" role="alert">
+              {exportErrorMessage}
+            </p>
+          )}
+          {slides.length === 0 ? (
+            <p className="empty-outline-message">
+              当前大纲没有幻灯片。你可以添加一张空白幻灯片后再导出。
+            </p>
+          ) : (
+            <div className="slide-list">
+              {slides.map((slide, slideIndex) => (
               <article className="slide-card" key={slide.id}>
                 <div className="slide-card-header">
                   <h3>幻灯片 {slideIndex + 1}</h3>
@@ -446,8 +511,9 @@ function App() {
                     : '手动添加'}
                 </p>
               </article>
-            ))}
-          </div>
+              ))}
+            </div>
+          )}
         </section>
       )}
 
