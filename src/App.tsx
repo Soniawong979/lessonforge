@@ -2,6 +2,7 @@ import { useRef, useState, type ChangeEvent } from 'react'
 import * as pdfjsLib from 'pdfjs-dist'
 import type { PDFDocumentLoadingTask } from 'pdfjs-dist'
 import pdfWorker from 'pdfjs-dist/build/pdf.worker.min.mjs?url'
+import { useOutlineDraft } from './hooks/useOutlineDraft'
 import type { OutlineSlide } from './types/outline'
 import './App.css'
 
@@ -95,7 +96,6 @@ function createInitialOutline(pages: ExtractedPage[]): OutlineSlide[] {
 function App() {
   const [selectedFileName, setSelectedFileName] = useState('')
   const [pages, setPages] = useState<ExtractedPage[]>([])
-  const [slides, setSlides] = useState<OutlineSlide[]>([])
   const [isLoading, setIsLoading] = useState(false)
   const [progress, setProgress] = useState<ExtractionProgress | null>(null)
   const [errorMessage, setErrorMessage] = useState('')
@@ -103,9 +103,24 @@ function App() {
   const [isExporting, setIsExporting] = useState(false)
   const [exportErrorMessage, setExportErrorMessage] = useState('')
   const [exportStatusMessage, setExportStatusMessage] = useState('')
+  const {
+    draft,
+    pendingDraft,
+    saveStatus,
+    recoveryStatus,
+    storageError,
+    replaceDraft,
+    updateDraft,
+    restorePendingDraft,
+    dismissPendingDraft,
+    deleteDraft,
+  } = useOutlineDraft()
+  const slides = draft?.slides ?? []
   const requestIdRef = useRef(0)
   const loadingTaskRef = useRef<PDFDocumentLoadingTask | null>(null)
   const exportInProgressRef = useRef(false)
+  const exportRequestIdRef = useRef(0)
+  const fileInputRef = useRef<HTMLInputElement>(null)
 
   async function handleFileChange(event: ChangeEvent<HTMLInputElement>) {
     const file = event.currentTarget.files?.[0]
@@ -121,7 +136,6 @@ function App() {
 
     setSelectedFileName(file.name)
     setPages([])
-    setSlides([])
     setProgress(null)
     setErrorMessage('')
     setHasNoReadableText(false)
@@ -193,7 +207,7 @@ function App() {
       if (requestId === requestIdRef.current) {
         setPages(extractedPages)
         const initialOutline = createInitialOutline(extractedPages)
-        setSlides(initialOutline)
+        replaceDraft(file.name, initialOutline)
         setHasNoReadableText(initialOutline.length === 0)
       }
     } catch (error: unknown) {
@@ -216,39 +230,46 @@ function App() {
     slideId: string,
     update: (slide: OutlineSlide) => OutlineSlide,
   ) {
-    setSlides((currentSlides) =>
-      currentSlides.map((slide) =>
+    updateDraft((currentDraft) => ({
+      ...currentDraft,
+      slides: currentDraft.slides.map((slide) =>
         slide.id === slideId ? update(slide) : slide,
       ),
-    )
+    }))
   }
 
   function moveSlide(slideIndex: number, direction: -1 | 1) {
-    setSlides((currentSlides) => {
+    updateDraft((currentDraft) => {
       const destination = slideIndex + direction
-      if (destination < 0 || destination >= currentSlides.length) {
-        return currentSlides
+      if (
+        destination < 0 ||
+        destination >= currentDraft.slides.length
+      ) {
+        return currentDraft
       }
 
-      const reordered = [...currentSlides]
+      const reordered = [...currentDraft.slides]
       ;[reordered[slideIndex], reordered[destination]] = [
         reordered[destination],
         reordered[slideIndex],
       ]
-      return reordered
+      return { ...currentDraft, slides: reordered }
     })
   }
 
   function addSlide() {
-    setSlides((currentSlides) => [
-      ...currentSlides,
-      {
-        id: crypto.randomUUID(),
-        title: '新幻灯片',
-        bullets: [''],
-        sourcePageNumbers: [],
-      },
-    ])
+    updateDraft((currentDraft) => ({
+      ...currentDraft,
+      slides: [
+        ...currentDraft.slides,
+        {
+          id: crypto.randomUUID(),
+          title: '新幻灯片',
+          bullets: [''],
+          sourcePageNumbers: [],
+        },
+      ],
+    }))
   }
 
   function handleSlideTitleChange(slideId: string, title: string) {
@@ -273,18 +294,19 @@ function App() {
       return
     }
 
-    if (slides.length === 0) {
+    if (!draft || slides.length === 0) {
       setExportErrorMessage('当前没有可导出的幻灯片，请先添加幻灯片。')
       setExportStatusMessage('')
       return
     }
 
+    const exportRequestId = ++exportRequestIdRef.current
     exportInProgressRef.current = true
     setIsExporting(true)
     setExportErrorMessage('')
     setExportStatusMessage('')
 
-    const baseName = selectedFileName
+    const baseName = (draft.sourcePdfName ?? selectedFileName)
       .replace(/\.pdf$/i, '')
       .replace(/[<>:"/\\|?*]/g, '-')
       .trim()
@@ -294,13 +316,63 @@ function App() {
     try {
       const { exportOutlineToPptx } = await import('./utils/exportPptx')
       await exportOutlineToPptx(slides, fileName)
-      setExportStatusMessage(`已生成并下载 ${fileName}`)
+      if (exportRequestId === exportRequestIdRef.current) {
+        setExportStatusMessage(`已生成并下载 ${fileName}`)
+      }
     } catch (error: unknown) {
-      const details = error instanceof Error ? ` ${error.message}` : ''
-      setExportErrorMessage(`PPTX 导出失败，请稍后重试。${details}`)
+      if (exportRequestId === exportRequestIdRef.current) {
+        const details = error instanceof Error ? ` ${error.message}` : ''
+        setExportErrorMessage(`PPTX 导出失败，请稍后重试。${details}`)
+      }
     } finally {
-      exportInProgressRef.current = false
-      setIsExporting(false)
+      if (exportRequestId === exportRequestIdRef.current) {
+        exportInProgressRef.current = false
+        setIsExporting(false)
+      }
+    }
+  }
+
+  async function handleDeleteDraft() {
+    const confirmed = window.confirm(
+      '确定删除本地草稿吗？这会同时清除当前编辑中的大纲，且无法撤销。',
+    )
+    if (!confirmed) {
+      return
+    }
+
+    try {
+      deleteDraft()
+    } catch {
+      return
+    }
+
+    const deletionRequestId = ++requestIdRef.current
+    const previousTask = loadingTaskRef.current
+    loadingTaskRef.current = null
+    ++exportRequestIdRef.current
+    exportInProgressRef.current = false
+
+    setSelectedFileName('')
+    setPages([])
+    setIsLoading(false)
+    setProgress(null)
+    setErrorMessage('')
+    setHasNoReadableText(false)
+    setIsExporting(false)
+    setExportErrorMessage('')
+    setExportStatusMessage('')
+    if (fileInputRef.current) {
+      fileInputRef.current.value = ''
+    }
+
+    if (previousTask) {
+      try {
+        await previousTask.destroy()
+      } catch {
+        if (deletionRequestId === requestIdRef.current) {
+          setErrorMessage('草稿已删除，但正在解析的 PDF 任务未能立即停止。')
+        }
+      }
     }
   }
 
@@ -311,6 +383,74 @@ function App() {
         <p className="subtitle">将教学 PDF 整理为可编辑的演示文稿</p>
       </header>
 
+      {recoveryStatus === 'available' && pendingDraft && (
+        <section
+          className="draft-recovery"
+          aria-labelledby="draft-recovery-heading"
+        >
+          <h2 id="draft-recovery-heading">发现本地草稿</h2>
+          <p>
+            {pendingDraft.sourcePdfName
+              ? `来源 PDF：${pendingDraft.sourcePdfName}。`
+              : '这是手动创建的大纲草稿。'}
+            {' '}上次保存于{' '}
+            {new Date(pendingDraft.updatedAt).toLocaleString()}。
+            草稿不包含 PDF 原文件。
+          </p>
+          <div className="draft-actions">
+            <button
+              className="primary-button"
+              type="button"
+              onClick={restorePendingDraft}
+            >
+              恢复草稿
+            </button>
+            <button
+              className="secondary-button"
+              type="button"
+              onClick={dismissPendingDraft}
+            >
+              暂不恢复
+            </button>
+            <button
+              className="danger-button"
+              type="button"
+              onClick={handleDeleteDraft}
+            >
+              删除本地草稿
+            </button>
+          </div>
+        </section>
+      )}
+
+      {recoveryStatus === 'invalid' && (
+        <section className="draft-notice" role="alert">
+          <p>
+            本地草稿数据损坏或版本不兼容，无法恢复。你可以删除损坏的草稿后继续使用。
+          </p>
+          <button
+            className="danger-button"
+            type="button"
+            onClick={handleDeleteDraft}
+          >
+            删除本地草稿
+          </button>
+        </section>
+      )}
+
+      {recoveryStatus === 'unavailable' && (
+        <p className="error-message" role="alert">
+          无法读取浏览器本地存储。当前页面仍可使用，但草稿恢复和自动保存可能不可用。
+          {storageError}
+        </p>
+      )}
+
+      {storageError && !draft && recoveryStatus !== 'unavailable' && (
+        <p className="error-message" role="alert">
+          {storageError}
+        </p>
+      )}
+
       <section className="upload-panel" aria-labelledby="upload-heading">
         <h2 id="upload-heading">提取 PDF 文字</h2>
         <p className="upload-description">
@@ -320,6 +460,7 @@ function App() {
           <span>选择 PDF 文件</span>
           <input
             id="pdf-file"
+            ref={fileInputRef}
             type="file"
             accept=".pdf,application/pdf"
             onChange={handleFileChange}
@@ -353,7 +494,7 @@ function App() {
         </p>
       )}
 
-      {pages.length > 0 && (
+      {draft && (
         <section className="outline" aria-labelledby="outline-heading">
           <div className="results-header">
             <div>
@@ -361,6 +502,25 @@ function App() {
               <p className="outline-description">
                 根据每页提取文字的段落和句子切分生成，不代表已理解教学语义；请继续检查和编辑。
               </p>
+              {draft.sourcePdfName && pages.length === 0 && (
+                <p className="draft-source">
+                  大纲来源 PDF：{draft.sourcePdfName}。PDF 文件不会保存在草稿中；重新上传后可查看原文。
+                </p>
+              )}
+              <p
+                className={`draft-save-status draft-save-status-${saveStatus}`}
+                role="status"
+              >
+                {saveStatus === 'pending' && '有更改等待自动保存…'}
+                {saveStatus === 'saving' && '正在保存草稿…'}
+                {saveStatus === 'saved' && '草稿已保存到此浏览器'}
+                {saveStatus === 'error' && '草稿保存失败'}
+              </p>
+              {storageError && recoveryStatus !== 'unavailable' && (
+                <p className="error-message" role="alert">
+                  {storageError}
+                </p>
+              )}
             </div>
             <div className="outline-actions">
               <button
@@ -377,6 +537,13 @@ function App() {
                 disabled={isExporting || slides.length === 0}
               >
                 {isExporting ? '正在导出…' : '导出 PPTX'}
+              </button>
+              <button
+                className="danger-button"
+                type="button"
+                onClick={handleDeleteDraft}
+              >
+                删除本地草稿
               </button>
             </div>
           </div>
@@ -423,11 +590,12 @@ function App() {
                       className="danger-button"
                       type="button"
                       onClick={() =>
-                        setSlides((currentSlides) =>
-                          currentSlides.filter(
+                        updateDraft((currentDraft) => ({
+                          ...currentDraft,
+                          slides: currentDraft.slides.filter(
                             (currentSlide) => currentSlide.id !== slide.id,
                           ),
-                        )
+                        }))
                       }
                       aria-label={`删除幻灯片 ${slideIndex + 1}`}
                     >
@@ -510,7 +678,7 @@ function App() {
                       ))
                     : '手动添加'}
                 </p>
-              </article>
+                </article>
               ))}
             </div>
           )}
