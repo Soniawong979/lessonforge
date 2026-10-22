@@ -13,17 +13,99 @@ type ExtractedPage = {
   text: string
 }
 
+type OutlineSlide = {
+  id: string
+  title: string
+  bullets: string[]
+  sourcePageNumbers: number[]
+}
+
 type ExtractionProgress = {
   currentPage: number
   totalPages: number
 }
 
+const MAX_BULLET_LENGTH = 240
+const MAX_BULLETS_PER_SLIDE = 5
+
+function splitLongText(text: string): string[] {
+  const characters = Array.from(text)
+  const chunks: string[] = []
+
+  while (characters.length > MAX_BULLET_LENGTH) {
+    chunks.push(characters.splice(0, MAX_BULLET_LENGTH).join(''))
+  }
+
+  if (characters.length > 0) {
+    chunks.push(characters.join(''))
+  }
+
+  return chunks.map((chunk) => chunk.trim()).filter(Boolean)
+}
+
+function splitPageIntoBullets(text: string): string[] {
+  const paragraphs = text.split(/\n+/u).map((paragraph) => paragraph.trim())
+  const bullets: string[] = []
+
+  for (const paragraph of paragraphs) {
+    if (!paragraph) {
+      continue
+    }
+
+    const sentences = paragraph
+      .split(/(?<=[。！？.!?])\s*/u)
+      .map((sentence) => sentence.trim())
+      .filter(Boolean)
+
+    for (const sentence of sentences) {
+      bullets.push(...splitLongText(sentence))
+    }
+  }
+
+  return bullets
+}
+
+function createInitialOutline(pages: ExtractedPage[]): OutlineSlide[] {
+  const slides: OutlineSlide[] = []
+
+  for (const page of pages) {
+    const bullets = splitPageIntoBullets(page.text)
+
+    for (
+      let start = 0;
+      start < bullets.length;
+      start += MAX_BULLETS_PER_SLIDE
+    ) {
+      const slideBullets = bullets.slice(
+        start,
+        start + MAX_BULLETS_PER_SLIDE,
+      )
+      const firstBullet = slideBullets[0] ?? ''
+      const title =
+        firstBullet.length > 36
+          ? `${firstBullet.slice(0, 36)}…`
+          : firstBullet || `第 ${page.pageNumber} 页内容`
+
+      slides.push({
+        id: crypto.randomUUID(),
+        title,
+        bullets: slideBullets,
+        sourcePageNumbers: [page.pageNumber],
+      })
+    }
+  }
+
+  return slides
+}
+
 function App() {
   const [selectedFileName, setSelectedFileName] = useState('')
   const [pages, setPages] = useState<ExtractedPage[]>([])
+  const [slides, setSlides] = useState<OutlineSlide[]>([])
   const [isLoading, setIsLoading] = useState(false)
   const [progress, setProgress] = useState<ExtractionProgress | null>(null)
   const [errorMessage, setErrorMessage] = useState('')
+  const [hasNoReadableText, setHasNoReadableText] = useState(false)
   const requestIdRef = useRef(0)
   const loadingTaskRef = useRef<PDFDocumentLoadingTask | null>(null)
 
@@ -41,8 +123,10 @@ function App() {
 
     setSelectedFileName(file.name)
     setPages([])
+    setSlides([])
     setProgress(null)
     setErrorMessage('')
+    setHasNoReadableText(false)
     setIsLoading(false)
 
     const hasPdfExtension = /\.pdf$/i.test(file.name)
@@ -108,6 +192,9 @@ function App() {
 
       if (requestId === requestIdRef.current) {
         setPages(extractedPages)
+        const initialOutline = createInitialOutline(extractedPages)
+        setSlides(initialOutline)
+        setHasNoReadableText(initialOutline.length === 0)
       }
     } catch (error: unknown) {
       if (requestId === requestIdRef.current) {
@@ -123,6 +210,62 @@ function App() {
         setIsLoading(false)
       }
     }
+  }
+
+  function updateSlide(
+    slideId: string,
+    update: (slide: OutlineSlide) => OutlineSlide,
+  ) {
+    setSlides((currentSlides) =>
+      currentSlides.map((slide) =>
+        slide.id === slideId ? update(slide) : slide,
+      ),
+    )
+  }
+
+  function moveSlide(slideIndex: number, direction: -1 | 1) {
+    setSlides((currentSlides) => {
+      const destination = slideIndex + direction
+      if (destination < 0 || destination >= currentSlides.length) {
+        return currentSlides
+      }
+
+      const reordered = [...currentSlides]
+      ;[reordered[slideIndex], reordered[destination]] = [
+        reordered[destination],
+        reordered[slideIndex],
+      ]
+      return reordered
+    })
+  }
+
+  function addSlide() {
+    setSlides((currentSlides) => [
+      ...currentSlides,
+      {
+        id: crypto.randomUUID(),
+        title: '新幻灯片',
+        bullets: [''],
+        sourcePageNumbers: [],
+      },
+    ])
+  }
+
+  function handleSlideTitleChange(slideId: string, title: string) {
+    updateSlide(slideId, (slide) => ({ ...slide, title }))
+  }
+
+  function handleBulletChange(
+    slideId: string,
+    bulletIndex: number,
+    text: string,
+  ) {
+    updateSlide(slideId, (slide) => ({
+      ...slide,
+      bullets: slide.bullets.map((bullet, index) =>
+        index === bulletIndex ? text : bullet,
+      ),
+    }))
   }
 
   return (
@@ -167,6 +310,146 @@ function App() {
           </p>
         )}
       </section>
+
+      {hasNoReadableText && (
+        <p className="empty-outline-message" role="status">
+          PDF 已读取，但没有提取到可生成大纲的文字。扫描版 PDF 暂不支持 OCR。
+        </p>
+      )}
+
+      {slides.length > 0 && (
+        <section className="outline" aria-labelledby="outline-heading">
+          <div className="results-header">
+            <div>
+              <h2 id="outline-heading">课件大纲（初稿）</h2>
+              <p className="outline-description">
+                根据每页提取文字的段落和句子切分生成，不代表已理解教学语义；请继续检查和编辑。
+              </p>
+            </div>
+            <button className="secondary-button" type="button" onClick={addSlide}>
+              添加幻灯片
+            </button>
+          </div>
+          <div className="slide-list">
+            {slides.map((slide, slideIndex) => (
+              <article className="slide-card" key={slide.id}>
+                <div className="slide-card-header">
+                  <h3>幻灯片 {slideIndex + 1}</h3>
+                  <div className="slide-actions">
+                    <button
+                      className="secondary-button"
+                      type="button"
+                      onClick={() => moveSlide(slideIndex, -1)}
+                      disabled={slideIndex === 0}
+                      aria-label={`将幻灯片 ${slideIndex + 1} 上移`}
+                    >
+                      上移
+                    </button>
+                    <button
+                      className="secondary-button"
+                      type="button"
+                      onClick={() => moveSlide(slideIndex, 1)}
+                      disabled={slideIndex === slides.length - 1}
+                      aria-label={`将幻灯片 ${slideIndex + 1} 下移`}
+                    >
+                      下移
+                    </button>
+                    <button
+                      className="danger-button"
+                      type="button"
+                      onClick={() =>
+                        setSlides((currentSlides) =>
+                          currentSlides.filter(
+                            (currentSlide) => currentSlide.id !== slide.id,
+                          ),
+                        )
+                      }
+                      aria-label={`删除幻灯片 ${slideIndex + 1}`}
+                    >
+                      删除幻灯片
+                    </button>
+                  </div>
+                </div>
+
+                <label className="editor-label" htmlFor={`title-${slide.id}`}>
+                  标题
+                  <textarea
+                    id={`title-${slide.id}`}
+                    className="editor-input title-input"
+                    value={slide.title}
+                    rows={2}
+                    onChange={(event) =>
+                      handleSlideTitleChange(slide.id, event.currentTarget.value)
+                    }
+                  />
+                </label>
+
+                <div className="bullet-editor">
+                  <div className="bullet-editor-header">
+                    <span className="editor-label">要点</span>
+                    <button
+                      className="secondary-button"
+                      type="button"
+                      onClick={() =>
+                        updateSlide(slide.id, (currentSlide) => ({
+                          ...currentSlide,
+                          bullets: [...currentSlide.bullets, ''],
+                        }))
+                      }
+                    >
+                      添加要点
+                    </button>
+                  </div>
+                  {slide.bullets.map((bullet, bulletIndex) => (
+                    <div className="bullet-row" key={bulletIndex}>
+                      <textarea
+                        className="editor-input bullet-input"
+                        aria-label={`幻灯片 ${slideIndex + 1} 要点 ${bulletIndex + 1}`}
+                        value={bullet}
+                        rows={2}
+                        onChange={(event) =>
+                          handleBulletChange(
+                            slide.id,
+                            bulletIndex,
+                            event.currentTarget.value,
+                          )
+                        }
+                      />
+                      <button
+                        className="danger-button"
+                        type="button"
+                        onClick={() =>
+                          updateSlide(slide.id, (currentSlide) => ({
+                            ...currentSlide,
+                            bullets: currentSlide.bullets.filter(
+                              (_, currentIndex) => currentIndex !== bulletIndex,
+                            ),
+                          }))
+                        }
+                        aria-label={`删除幻灯片 ${slideIndex + 1} 的要点 ${bulletIndex + 1}`}
+                      >
+                        删除要点
+                      </button>
+                    </div>
+                  ))}
+                </div>
+
+                <p className="slide-source">
+                  来源 PDF 页码：
+                  {slide.sourcePageNumbers.length > 0
+                    ? slide.sourcePageNumbers.map((pageNumber, index) => (
+                        <span key={pageNumber}>
+                          {index > 0 ? '、' : ''}
+                          第 {pageNumber} 页
+                        </span>
+                      ))
+                    : '手动添加'}
+                </p>
+              </article>
+            ))}
+          </div>
+        </section>
+      )}
 
       {pages.length > 0 && (
         <section className="results" aria-labelledby="results-heading">
