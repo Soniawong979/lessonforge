@@ -1,0 +1,158 @@
+.app-shell {
+  width: 100%;
+  max-width: 880px;
+  margin: 0 auto;
+  padding: 48px 32px 72px;
+  box-sizing: border-box;
+  text-align: left;
+}
+
+.app-header {
+  margin-bottom: 36px;
+  text-align: center;
+}
+
+.app-header h1 {
+  margin: 0;
+  font-size: 42px;
+  letter-spacing: -1px;
+}
+
+.subtitle {
+  margin-top: 10px;
+  color: var(--text);
+}
+
+.upload-panel {
+  padding: 28px;
+  border: 1px solid var(--border);
+  border-radius: 12px;
+  background: var(--bg);
+  box-shadow: var(--shadow);
+}
+
+.upload-panel h2,
+.results-header h2 {
+  margin: 0;
+  font-size: 22px;
+}
+
+.upload-description {
+  margin: 10px 0 20px;
+}
+
+.file-picker {
+  display: inline-flex;
+  align-items: center;
+  gap: 12px;
+  color: var(--text-h);
+  font-size: 15px;
+  font-weight: 600;
+}
+
+.file-picker input {
+  max-width: 100%;
+  font: inherit;
+}
+
+.file-picker input:focus-visible {
+  outline: 2px solid var(--accent);
+  outline-offset: 4px;
+}
+
+.file-limit {
+  margin-top: 10px;
+  font-size: 14px;
+}
+
+.selected-file {
+  margin-top: 18px;
+  overflow-wrap: anywhere;
+}
+
+.selected-file strong {
+  color: var(--text-h);
+}
+
+.status-message,
+.error-message {
+  margin-top: 16px;
+}
+
+.status-message {
+  color: var(--accent);
+}
+
+.error-message {
+  color: #b42318;
+}
+
+.results {
+  margin-top: 36px;
+}
+
+.results-header {
+  display: flex;
+  align-items: baseline;
+  justify-content: space-between;
+  gap: 16px;
+}
+
+.results-header span {
+  color: var(--text);
+  font-size: 14px;
+}
+
+.ocr-note {
+  margin: 12px 0 20px;
+  font-size: 14px;
+}
+
+.page-list {
+  display: grid;
+  gap: 16px;
+}
+
+.page-card {
+  padding: 22px 24px;
+  border: 1px solid var(--border);
+  border-radius: 10px;
+  background: var(--bg);
+}
+
+.page-card h3 {
+  margin: 0 0 14px;
+  color: var(--text-h);
+  font-size: 17px;
+}
+
+.page-text {
+  min-height: 24px;
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
+  line-height: 1.7;
+}
+
+@media (max-width: 600px) {
+  .app-shell {
+    padding: 32px 18px 48px;
+  }
+
+  .app-header {
+    margin-bottom: 28px;
+  }
+
+  .app-header h1 {
+    font-size: 34px;
+  }
+
+  .upload-panel,
+  .page-card {
+    padding: 20px;
+  }
+
+  .file-picker {
+    align-items: flex-start;
+    flex-direction: column;
+  }
+}
